@@ -1,0 +1,20 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 2012
+Project("{4925A630-B079-445d-BCD4-3A9C94FE9307}") = "IdeloServer", "IdeloServer\IdeloServer.fsproj", "{BB7A9EC1-D746-4927-AF61-1ADD11109D9A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x86 = Debug|x86
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{BB7A9EC1-D746-4927-AF61-1ADD11109D9A}.Debug|x86.ActiveCfg = Debug|x86
+		{BB7A9EC1-D746-4927-AF61-1ADD11109D9A}.Debug|x86.Build.0 = Debug|x86
+		{BB7A9EC1-D746-4927-AF61-1ADD11109D9A}.Release|x86.ActiveCfg = Release|x86
+		{BB7A9EC1-D746-4927-AF61-1ADD11109D9A}.Release|x86.Build.0 = Release|x86
+	EndGlobalSection
+	GlobalSection(MonoDevelopProperties) = preSolution
+		StartupItem = IdeloServer\IdeloServer.fsproj
+	EndGlobalSection
+EndGlobal
