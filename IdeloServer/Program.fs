@@ -5,6 +5,7 @@ open MongoDB.Driver.Builders
 open MongoDB.FSharp
 open Suave.Http
 open Suave.Http.Applicatives
+open Suave.Http.Files
 open Suave.Http.Successful
 open Suave.Http.RequestErrors
 open Suave.Types
@@ -107,7 +108,19 @@ let ideloApp : WebPart =
         GET >>= url "/Otsi" >>= Otsi
         GET >>= url "/Salvesta" >>= Salvesta
         GET >>= url "/Uuenda" >>= Uuenda
+        GET >>= browse
         NOT_FOUND "Found no handlers"
     ]
 
-web_server default_config ideloApp
+let default_mime_types_map = function
+    | ".map"
+    | ".eot"
+    | ".svg"
+    | ".ttf"
+    | ".woff" -> Some { name = "text/plain"; compression = true }
+    | ".css"  -> Some { name = "text/css"; compression = true }
+    | ".htm"  -> Some { name = "text/html"; compression = true }
+    | ".js"   -> Some { name = "application/x-javascript"; compression = true }
+    | _       -> None
+
+web_server { default_config with mime_types_map = default_mime_types_map; home_folder = Some "/home/janno/Work/Idelo" } ideloApp
