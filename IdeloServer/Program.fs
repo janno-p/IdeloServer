@@ -11,6 +11,7 @@ open Suave.Types
 open Suave.Utils
 open Suave.Utils.Option
 open Suave.Web
+open System
 open System.IO
 open System.Text
 
@@ -24,53 +25,82 @@ let tables = [| 0 .. 4 |]
              |> Array.map (fun n -> sprintf "t%d" n)
 
 let fields = [| 0 .. 19 |]
-             |> Array.map (fun n -> sprintf "t%d" n)
-             |> Array.append [| "id"; "salvestaja" |]
+             |> Array.map (fun n -> sprintf "f%d" n)
+
+let GetCollectionName (req : HttpRequest) =
+    match req.query ? table with
+    | Some name -> tables |> Array.tryFind (fun x -> x = name)
+    | _ -> None
 
 let Otsi = request (fun req ->
     req.response.Headers.Add("Content-Type", "text/plain")
-    let tableName = match req.query ? table with
-                    | Some name -> tables |> Array.tryFind (fun x -> x = name)
-                    | _ -> None
-    match tableName with
+    match GetCollectionName(req) with
     | None -> OK "0"
     | Some tableName ->
         let collection = db.GetCollection tableName
+        let fieldQuery = Query.Or(fields |> Array.map (fun x -> Query.Exists(x)))
         let queries = fields |> Array.fold (fun acc f -> match req.query.ContainsKey f with
                                                          | true -> Query.EQ(f, new BsonString(req.query.[f])) :: acc
-                                                         | false -> acc) []
+                                                         | _ -> acc) []
         let values = match queries with
-                     | [] -> collection.FindAll()
-                     | _ -> collection.Find(Query.And(queries))
+                     | [] -> collection.Find(fieldQuery)
+                     | _ -> collection.Find(Query.And(fieldQuery :: queries))
         let sortField =
-            let sortName = req.query ? order |> or_default "id"
-            match fields |> Array.find (fun f -> f = sortName) with
-            | "id" -> "_id"
-            | x -> x
+            let sortName = req.query ? order |> or_default ""
+            match fields |> Array.tryFind (fun f -> f = sortName) with
+            | Some x -> x
+            | _ -> "_id"
         let sortBy = match req.query ? direction with
                      | Some "asc" -> SortBy.Ascending(sortField)
                      | _ -> SortBy.Descending(sortField)
-        let settings = new JsonWriterSettings(OutputMode = JsonOutputMode.Strict)
         let offset = match req.query ? fromrow with
                      | Some x -> let mutable n = 0
-                                 match System.Int32.TryParse(x, &n) with
+                                 match Int32.TryParse(x, &n) with
                                  | true -> n
                                  | _ -> 0
                      | _ -> 0
         let count = match req.query ? getrows with
                     | Some x -> let mutable n = 0
-                                match System.Int32.TryParse(x, &n) with
+                                match Int32.TryParse(x, &n) with
                                 | true -> n
                                 | _ -> 100
                     | _ -> 100
-        OK (values.SetSkip(offset).SetLimit(count).SetSortOrder(sortBy).ToJson(settings))
+        let settings = new JsonWriterSettings(OutputMode = JsonOutputMode.Strict)
+        OK (values.SetFields(Fields.Include(fields)).SetSkip(offset).SetLimit(count).SetSortOrder(sortBy).ToJson(settings))
 )
 
-let Salvesta =
-    request (fun req -> OK "Salvesta GET")
+let Salvesta = request (fun req ->
+    req.response.Headers.Add("Content-Type", "text/plain")
+    match GetCollectionName(req) with
+    | None -> OK "0"
+    | Some tableName ->
+        let collection = db.GetCollection tableName
+        let elements = fields |> Array.fold (fun acc f -> match req.query.ContainsKey(f) && not (String.IsNullOrWhiteSpace(req.query.[f])) with
+                                                          | true -> new BsonElement(f, new BsonString(req.query.[f])) :: acc
+                                                          | _ -> acc) []
+        match elements |> List.isEmpty with
+        | true -> OK "0"
+        | _ ->
+            collection.Insert(new BsonDocument(elements)) |> ignore
+            OK "1"
+)
 
-let Uuenda =
-    request (fun req -> OK "Uuenda GET")
+let Uuenda = request (fun req ->
+    req.response.Headers.Add("Content-Type", "text/plain")
+    match GetCollectionName(req) with
+    | None -> OK "0"
+    | Some tableName ->
+        let collection = db.GetCollection tableName
+        let hasFields = fields |> Array.exists (fun x -> req.query.ContainsKey(x) && not (String.IsNullOrWhiteSpace(req.query.[x])))
+        match req.query ? id, hasFields with
+        | Some id, true ->
+            let update = fields |> Array.fold (fun (acc : UpdateBuilder) f -> match req.query.ContainsKey(f) && not (String.IsNullOrWhiteSpace(req.query.[f])) with
+                                                                              | true -> acc.Set(f, new BsonString(req.query.[f]))
+                                                                              | _ -> acc.Unset(f)) (new UpdateBuilder())
+            collection.Update(Query.EQ("_id", new BsonObjectId(new ObjectId(id))), update) |> ignore
+            OK "1"
+        | _ -> OK "0"
+)
 
 let ideloApp : WebPart =
     choose [
