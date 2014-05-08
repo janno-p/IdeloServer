@@ -32,15 +32,44 @@ type FieldType =
     | Simple of string
     | Array of string * char
 
-let FieldName field =
-    match field with
+let FieldName = function
     | Simple x -> x
     | Array (x, _) -> x
 
 let FieldToBson field (value : Collections.Generic.Dictionary<string, string>) =
     match field with
     | Simple x -> (BsonString value.[x]) :> BsonValue
-    | Array (x, sep) -> (BsonArray (value.[x].Split(sep) |> Array.map (fun s -> s.Trim()))) :> BsonValue
+    | Array (x, sep) -> (BsonArray (value.[x].Split(sep) |> Array.map (fun s -> s.Trim()) |> Array.filter(fun s -> not (String.IsNullOrWhiteSpace(s))))) :> BsonValue
+
+let ApplySort fields (query : Collections.Generic.Dictionary<string, string>) (values : MongoCursor<BsonDocument>) =
+    let sortField =
+        let sortName = query ? order |> or_default ""
+        match fields |> List.tryFind (fun f -> f = sortName) with
+        | Some name -> name
+        | _ -> "_id"
+    let sortBy = match query ? direction with
+                 | Some "asc" -> SortBy.Ascending(sortField)
+                 | _ -> SortBy.Descending(sortField)
+    values.SetSortOrder(sortBy)
+
+let ApplyPaging fields (query : Collections.Generic.Dictionary<string, string>) (values : MongoCursor<BsonDocument>) =
+    let offset = match query ? fromrow with
+                 | Some x -> let mutable n = 0
+                             match Int32.TryParse(x, &n) with
+                             | true -> n
+                             | _ -> 0
+                 | _ -> 0
+    let count = match query ? getrows with
+                | Some x -> let mutable n = 0
+                            match Int32.TryParse(x, &n) with
+                            | true -> n
+                            | _ -> 100
+                | _ -> 100
+    values.SetSkip(offset).SetLimit(count)
+                
+let result_response (total : int64) (items : BsonValue list) =
+    let document = BsonDocument([BsonElement("total", (BsonInt64 total)); BsonElement("items", (BsonArray items))])
+    OK (document.ToJson jsonSettings)
 
 let save_request (collectionName : string) (fields : FieldType list) = plain_request (fun req ->
     let existing, missing = fields |> List.partition (fun field -> req.query.ContainsKey(FieldName field) && not (String.IsNullOrWhiteSpace(req.query.[FieldName field])))
@@ -110,6 +139,31 @@ module Kaebus =
     let Otsi = search_request collection fields
     let Salvesta = save_request collection fields
 
+    let Sildid = plain_request (fun req ->
+        let collection = db.GetCollection collection
+
+        let pipeline = seq {
+            if req.query.ContainsKey("q") then
+                yield BsonDocument("$match", BsonDocument("tags", BsonRegularExpression(req.query.["q"], "i")))
+            yield BsonDocument("$unwind", BsonString "$tags")
+            yield BsonDocument("$group", BsonDocument("_id", BsonString "$tags"))
+            yield BsonDocument("$project", BsonDocument("insensitive", BsonDocument("$toLower", BsonString "$_id")))
+            if req.query.ContainsKey("q") then
+                yield BsonDocument("$match", BsonDocument("insensitive", BsonRegularExpression(req.query.["q"])))
+            yield BsonDocument("$sort", BsonDocument("insensitive", BsonInt32 1))
+            yield BsonDocument("$project", BsonDocument("_id", BsonInt32 1))
+            let count = match req.query ? count with
+                        | Some count -> let mutable n = 0
+                                        match Int32.TryParse(count, &n) with
+                                        | true -> n
+                                        | _ -> 10
+                        | _ -> 10
+            yield BsonDocument("$limit", BsonInt32 count)
+        }
+
+        OK (collection.Aggregate(AggregateArgs(Pipeline = pipeline)).ToJson(jsonSettings))
+    )
+
 module Kasutaja =
     let collection = "user"
     let fields = [ Simple("username"); Simple("password"); Simple("role"); Simple("name") ]
@@ -122,13 +176,37 @@ module Kodanik =
     let Otsi = search_request collection fields
     let Salvesta = save_request collection fields
 
+    let citizenOrder = ApplySort (fields |> List.map FieldName)
+    let citizenPaging = ApplyPaging (fields |> List.map FieldName)
+
+    let MinuSubjektid = plain_request (fun req ->
+        match req.query ? user with
+        | Some id ->
+            let complaints = db.GetCollection Kaebus.collection
+            let queryUser = Query.EQ("user", new BsonString(id))
+            let query = match req.query ? tags with
+                        | Some str -> Query.And(queryUser, Query.All("tags", (str.Split(',') |> Array.map (fun s -> BsonString (s.Trim()) :> BsonValue))))
+                        | _ -> queryUser
+            let subjects = complaints.Distinct("subject", query)
+            let collection = db.GetCollection collection
+            let fieldNames = fields |> List.choose (fun f -> match f with | Simple x -> Some x | _ -> None)
+            let checkQuery = Query.Or(fields |> List.map (fun f -> Query.Exists(FieldName f)))
+            let values = collection.Find(Query.And(checkQuery, Query.In("_id", subjects |> Seq.map (fun x -> (BsonObjectId (ObjectId x.AsString)) :> BsonValue))))
+            let totalCount = values.Clone().Count()
+            let documents = values.SetFields(Fields.Include(fieldNames |> List.toArray)) |> (citizenPaging req.query) |> (citizenOrder req.query)
+            result_response totalCount (documents |> Seq.map (fun x -> x :> BsonValue) |> Seq.toList)
+        | _ -> result_response 0L []
+    )
+
 let ideloApp : WebPart =
     choose [ GET >>= url "/Kaebus/Otsi" >>= Kaebus.Otsi
              GET >>= url "/Kaebus/Salvesta" >>= Kaebus.Salvesta
+             GET >>= url "/Kaebus/Sildid" >>= Kaebus.Sildid
              GET >>= url "/Kasutaja/Otsi" >>= Kasutaja.Otsi
              GET >>= url "/Kasutaja/Salvesta" >>= Kasutaja.Salvesta
              GET >>= url "/Kodanik/Otsi" >>= Kodanik.Otsi
              GET >>= url "/Kodanik/Salvesta" >>= Kodanik.Salvesta
+             GET >>= url "/Kodanik/MinuSubjektid" >>= Kodanik.MinuSubjektid
              GET >>= browse
              NOT_FOUND "Found no handlers" ]
 
