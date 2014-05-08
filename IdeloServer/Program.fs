@@ -71,9 +71,12 @@ let search_request (collectionName : string) (fields : FieldType list) = plain_r
     let queries = fieldNames |> List.fold (fun acc field -> match req.query.ContainsKey field with
                                                             | true -> Query.Matches(field, (BsonRegularExpression (req.query.[field], "i"))) :: acc
                                                             | _ -> acc) []
+    let idQuery = match req.query ? id with
+                  | Some id -> [Query.EQ("_id", BsonObjectId (ObjectId id))]
+                  | _ -> []
     let values = match queries with
-                 | [] -> collection.Find(checkFields)
-                 | _ -> collection.Find(Query.And(checkFields :: queries))
+                 | [] -> collection.Find(Query.And(checkFields :: idQuery))
+                 | _ -> collection.Find(Query.And(checkFields :: (List.concat [idQuery; queries])))
     let sortField =
         let sortName = req.query ? order |> or_default ""
         match fieldNames |> List.tryFind (fun f -> f = sortName) with
