@@ -54,46 +54,10 @@ let result_response (total : int64) (items : BsonValue list) =
     let document = BsonDocument([BsonElement("total", (BsonInt64 total)); BsonElement("items", (BsonArray items))])
     OK (document.ToJson jsonSettings)
 
-(*
-let GetSubjects = plain_request (fun req ->
-    let collection = db.GetCollection citizenCollection
-    let result = collection.Aggregate(BsonDocument("$unwind", "$complaints")
-                                      BsonDocument("$group", BsonDocument(BsonElement("_id", BsonDocument(BsonElement("_id", BsonString "$_id")
-                                                                                                          BsonElement("name", BsonString "$name")
-                                                                                                          BsonElement("gender", BsonString "$gender")
-                                                                                                          BsonElement("birth_date", BsonString "$birth_date")
-                                                                                                          BsonElement("address", BsonString "$address")
-                                                                                                          BsonElement("photo_uri", BsonString "$photo_uri"))),
-                                                                          BsonElement("count", BsonDocument("$sum", BsonInt32 1))))
-                                      BsonDocument("$project", BsonDocument(BsonElement("_id", BsonString "$_id._id")
-                                                                            BsonElement("name", BsonString "$_id.name")
-                                                                            BsonElement("gender", BsonString "$_id.gender")
-                                                                            BsonElement("birth_date", BsonString "$_id.birth_date")
-                                                                            BsonElement("address", BsonString "$_id.address")
-                                                                            BsonElement("photo_uri", BsonString "$_id.photo_uri")
-                                                                            BsonElement("count", BsonInt32 1)))
-                                      BsonDocument("$sort", BsonElement("count", BsonInt32 1)))
-    
-    (*
-db.complaint.aggregate(
-/*    {$project: {
-        title: 1,
-        created_at: 1,
-        tags: 1
-    }},*/
-    {$unwind: "$tags"},
-    {$group: {_id: { title: "$title", created_at: "$created_at" }, count: { $sum: 1 } }},
-    {$sort: {count: 1}}
-).result
-    *)
-
-    let values = collection.FindAll()
-    let count = values.Clone().Count()
-    let subjects = values |> GetFields [ "name"; "gender"; "birth_date"; "address"; "photo_uri", "complaints" ]
-)
-    *)
-
-// let fields = [ Simple("title"); Simple("subject"); Simple("time"); Simple("lat"); Simple("lng"); Array("tags", ','); Simple("description"); Simple("user") ]
+let GetOrderBy query =
+    match query ? direction with
+    | Some "asc" -> 1
+    | _ -> -1
 
 let parseDouble str =
     let mutable d = 0.0
@@ -166,9 +130,6 @@ module Subject =
                               | _ -> ()
                               match req.query ? name with
                               | Some name -> yield Query<Subject>.Matches((fun x -> x.Name), BsonRegularExpression(name, "i"))
-                              | _ -> ()
-                              match req.query ? gender with
-                              | Some gender -> yield Query<Subject>.EQ((fun x -> x.Gender), gender)
                               | _ -> () }
                         |> Seq.toList
         let collection = db.GetCollection<Subject> collectionName
@@ -180,11 +141,52 @@ module Subject =
         result_response numSubjects (subjects |> Seq.map (fun s -> s.ToBsonDocument() :> BsonValue) |> Seq.toList)
     )
 
+    let FindAll = plain_request (fun req ->
+        let mappings = function
+            | "name" -> "Subject.Name"
+            | "birth_date" -> "Subject.BirthDate"
+            | "gender" -> "Subject.Gender"
+            | "address" -> "Subject.Address"
+            | "num_complaints" -> "NumComplaints"
+            | _ -> "LatestComplaint"
+        let searchCriteria = [ yield BsonDocument("$unwind", BsonString "$Complaints")
+                               yield BsonDocument("$group", BsonDocument([BsonElement("_id", BsonDocument([BsonElement("_id", BsonString "$_id")
+                                                                                                           BsonElement("Name", BsonString "$Name")
+                                                                                                           BsonElement("Gender", BsonString "$Gender")
+                                                                                                           BsonElement("BirthDate", BsonString "$BirthDate")
+                                                                                                           BsonElement("Address", BsonString "$Address")
+                                                                                                           BsonElement("PhotoUri", BsonString "$PhotoUri")]))
+                                                                          BsonElement("NumComplaints", BsonDocument("$sum", BsonInt32 1))
+                                                                          BsonElement("LatestComplaint", BsonDocument("$max", BsonString "$Complaints.CreatedAt"))]))
+                               yield BsonDocument("$project", BsonDocument([BsonElement("_id", BsonInt32 0)
+                                                                            BsonElement("Subject", BsonString "$_id")
+                                                                            BsonElement("NumComplaints", BsonInt32 1)
+                                                                            BsonElement("LatestComplaint", BsonInt32 1)])) ]
+        let countCriteria = [ yield BsonDocument("$group", BsonDocument([BsonElement("_id", BsonNull.Value)
+                                                                         BsonElement("count", BsonDocument("$sum", BsonInt32 1))])) ]
+        let viewCriteria = [
+            match req.query ? order |> or_default "" |> mappings with
+            | "LatestComplaint" -> yield BsonDocument("$sort", BsonDocument("LatestComplaint", BsonInt32 (GetOrderBy req.query)))
+            | orderBy -> yield BsonDocument("$sort", BsonDocument([BsonElement(orderBy, BsonInt32 (GetOrderBy req.query))
+                                                                   BsonElement("LatestComplaint", BsonInt32 -1)]))
+            match req.query ? fromrow with
+            | Some n -> let skipFrom = parseInt n
+                        if skipFrom.IsSome then
+                            yield BsonDocument("$skip", BsonInt32 skipFrom.Value)
+            | _ -> ()
+            match req.query ? getrows with
+            | Some n -> let numRows = parseInt n
+                        if numRows.IsSome then
+                            yield BsonDocument("$limit", BsonInt32 numRows.Value)
+            | _ -> ()
+        ]
+        let collection = db.GetCollection collectionName
+        let numSubjects = collection.Aggregate(AggregateArgs(Pipeline = List.append searchCriteria countCriteria)) |> Seq.head
+        let subjects = collection.Aggregate(AggregateArgs(Pipeline = List.append searchCriteria viewCriteria))
+        result_response (numSubjects.["count"].AsInt32 |> int64) (subjects |> Seq.map (fun x -> x :> BsonValue) |> Seq.toList)
+    )
+
     let FindComplaint = plain_request (fun req ->
-        let direction query =
-            match query ? direction with
-            | Some "asc" -> 1
-            | _ -> -1
         let mappings = function
             | "title" -> "Complaints.Title"
             | "date" -> "Complaints.Time"
@@ -202,8 +204,8 @@ module Subject =
         ]
         let viewCriteria = [
             match req.query ? order |> or_default "" |> mappings with
-            | "Complaints._id" -> yield BsonDocument("$sort", BsonDocument("Complaints._id", BsonInt32 (direction req.query)))
-            | orderBy -> yield BsonDocument("$sort", BsonDocument([BsonElement(orderBy, BsonInt32 (direction req.query))
+            | "Complaints._id" -> yield BsonDocument("$sort", BsonDocument("Complaints._id", BsonInt32 (GetOrderBy req.query)))
+            | orderBy -> yield BsonDocument("$sort", BsonDocument([BsonElement(orderBy, BsonInt32 (GetOrderBy req.query))
                                                                    BsonElement("Complaints._id", BsonInt32 -1)]))
             match req.query ? fromrow with
             | Some n -> let skipFrom = parseInt n
@@ -345,6 +347,7 @@ module User =
 let ideloApp : WebPart =
     choose [ GET >>= url "/Subject/Create" >>= Subject.Create
              GET >>= url "/Subject/Find" >>= Subject.Find
+             GET >>= url "/Subject/FindAll" >>= Subject.FindAll
              GET >>= url "/Subject/FindComplaint" >>= Subject.FindComplaint
              GET >>= url "/Subject/MakeComplaint" >>= Subject.MakeComplaint
              GET >>= url "/Subject/OfUser" >>= Subject.OfUser
