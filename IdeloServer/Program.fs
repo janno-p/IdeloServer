@@ -77,6 +77,39 @@ let parseDateTime str =
     | true -> Some dt
     | _ -> None
 
+module Tags =
+    [<Literal>]
+    let collectionName = "tags"
+
+    type Tag = { Id : ObjectId
+                 Name : string
+                 Forbidden : bool
+                 CreatedAt : DateTime }
+
+    let Find = plain_request (fun req ->
+        let mappings = function
+            | "name" -> "Name"
+            | "status" -> "Forbidden"
+            | "created_at" -> "CreatedAt"
+            | _ -> "_id"
+        let collection = db.GetCollection<Tag> collectionName
+        let values = collection.FindAll()
+        let numTags = values.Clone().Count();
+        let tags = values |> ApplyPaging req.query |> ApplySort mappings req.query
+        result_response numTags (tags |> Seq.map (fun s -> s.ToBsonDocument() :> BsonValue) |> Seq.toList)
+    )
+
+    let Enable = plain_request (fun req ->
+        match req.query ? id with
+        | Some id ->
+            let collection = db.GetCollection<Tag> collectionName
+            let tag = collection.FindOne(Query<Tag>.EQ((fun x -> x.Id), ObjectId id))
+            let newTag = { tag with Forbidden = match req.query ? enable |> or_default "true" with | "true" -> false | _ -> true }
+            collection.Save(newTag) |> ignore
+            OK (newTag.ToJson jsonSettings)
+        | _ -> OK "null"
+    )
+
 module Subject =
     [<Literal>]
     let collectionName = "subjects"
@@ -168,7 +201,7 @@ module Subject =
             match req.query ? order |> or_default "" |> mappings with
             | "LatestComplaint" -> yield BsonDocument("$sort", BsonDocument("LatestComplaint", BsonInt32 (GetOrderBy req.query)))
             | orderBy -> yield BsonDocument("$sort", BsonDocument([BsonElement(orderBy, BsonInt32 (GetOrderBy req.query))
-                                                                   BsonElement("LatestComplaint", BsonInt32 -1)]))
+                                                                   BsonElement("LatestComplaint", BsonInt32 (GetOrderBy req.query))]))
             match req.query ? fromrow with
             | Some n -> let skipFrom = parseInt n
                         if skipFrom.IsSome then
@@ -237,6 +270,14 @@ module Subject =
                     let tagArray = tags.Split(',')
                                    |> Array.map (fun str -> str.Trim())
                                    |> Array.filter (fun str -> not (String.IsNullOrWhiteSpace(str)))
+                    let tagCollection = db.GetCollection<Tags.Tag> Tags.collectionName
+                    let existingTags = tagCollection.Find(Query<Tags.Tag>.In((fun x -> x.Name), tagArray)) |> Seq.toList
+                    tagArray |> Array.filter (fun tag -> not (existingTags |> List.exists (fun e -> e.Name = tag)))
+                             |> Array.iter (fun tag -> let (newTag : Tags.Tag) = { Id = ObjectId.GenerateNewId()
+                                                                                   Name = tag
+                                                                                   Forbidden = false
+                                                                                   CreatedAt = DateTime.Now }
+                                                       tagCollection.Insert(newTag) |> ignore)
                     let photos = req.query.Keys
                                  |> Seq.filter (fun k -> Regex.IsMatch(k, @"^photo[1-5]$") && not (String.IsNullOrWhiteSpace(req.query.[k])))
                                  |> Seq.map (fun k -> req.query.[k])
@@ -352,6 +393,8 @@ let ideloApp : WebPart =
              GET >>= url "/Subject/MakeComplaint" >>= Subject.MakeComplaint
              GET >>= url "/Subject/OfUser" >>= Subject.OfUser
              GET >>= url "/Subject/Tags" >>= Subject.Tags
+             GET >>= url "/Tags/Enable" >>= Tags.Enable
+             GET >>= url "/Tags/Find" >>= Tags.Find
              GET >>= url "/User/Auth" >>= User.Auth
              GET >>= url "/User/Exists" >>= User.Exists
              GET >>= url "/User/Register" >>= User.Register
