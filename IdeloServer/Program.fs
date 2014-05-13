@@ -14,6 +14,7 @@ open Suave.Utils.Option
 open Suave.Web
 open System
 open System.Collections.Generic
+open System.Configuration
 open System.Text.RegularExpressions
 
 Serializers.Register()
@@ -412,8 +413,14 @@ let default_mime_types_map = function
     | ".js"   -> Some { name = "application/x-javascript"; compression = true }
     | _       -> None
 
+let port = parseInt ConfigurationManager.AppSettings.["port"] |> or_default 8083
+let ip = match ConfigurationManager.AppSettings.["ip"] with
+         | "" | null -> "127.0.0.1"
+         | ip -> ip
+
 let ideloConfig = { default_config with
                         mime_types_map = default_mime_types_map
-                        home_folder = Some "/home/janno/Work/Idelo" }
+                        home_folder = Some ConfigurationManager.AppSettings.["static"]
+                        bindings = [ HttpBinding.Create(Protocol.HTTP, ip, port) ] }
 
 web_server ideloConfig ideloApp

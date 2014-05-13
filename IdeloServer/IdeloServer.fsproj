@@ -52,6 +52,7 @@
     <Reference Include="MongoDB.Driver">
       <HintPath>..\packages\mongocsharpdriver.1.9.0\lib\net35\MongoDB.Driver.dll</HintPath>
     </Reference>
+    <Reference Include="System.Configuration" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="AssemblyInfo.fs" />
@@ -61,5 +62,6 @@
   <Import Project="../packages/Suave.0.6.0/build/suave.targets" Condition="Exists('../packages/Suave.0.6.0/build/suave.targets')" />
   <ItemGroup>
     <None Include="packages.config" />
+    <None Include="App.config" />
   </ItemGroup>
 </Project>
